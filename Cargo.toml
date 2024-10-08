@@ -16,3 +16,7 @@ derive_builder = { path = "builder" }
 derive_debug = { path = "debug" }
 seq = { path = "seq" }
 sorted = { path = "sorted" }
+
+[dev-dependencies]
+trybuild = "1.0.99"
+
