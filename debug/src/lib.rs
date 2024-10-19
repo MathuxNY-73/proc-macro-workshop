@@ -1,13 +1,14 @@
 use proc_macro::TokenStream;
 
-use syn::{parse_macro_input, parse_quote, DeriveInput, Token};
+use std::collections::HashSet;
+use syn::{parse_macro_input, parse_quote, spanned::Spanned, DeriveInput, Token};
 use quote::quote;
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
-    eprintln!("{:#?}", input);
+    // eprintln!("{:#?}", input);
     let name = &input.ident;
     let syn::Data::Struct(
         syn::DataStruct {
@@ -48,51 +49,136 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
 fn get_type_params<'a>(
     ty: &'a str,
-    fields: &'a syn::punctuated::Punctuated<syn::Field, Token![,]>,
-    generics: &'a mut syn::Generics) -> impl Iterator<Item = &'a mut syn::TypeParam> {
-        generics.type_params_mut().filter(move |g| {
-            fields.iter().filter_map(|f| match f.ty {
-                syn::Type::Path(syn::TypePath {
-                    path: syn::Path {
-                        ref segments,
-                        ..
-                    },
+    fields: &'a syn::punctuated::Punctuated<syn::Field, Token![,]>
+) -> impl Iterator<Item = &'a syn::Type> {
+    let not_inner_ty = move |ps: &syn::PathSegment| match ps {
+        syn::PathSegment {
+            ident,
+            arguments: syn::PathArguments::AngleBracketed(_) | syn::PathArguments::None,
+        } if ident != ty => true,
+        _ => false
+    };
+
+    fields.iter().filter_map(move |f| match f.ty {
+        ref typ @ syn::Type::Path(syn::TypePath {
+            path: syn::Path {
+                ref segments,
+                ..
+            },
+            ..
+        }) if segments.last().map_or(false, not_inner_ty) => Some(typ),
+        _ => None,
+    })
+}
+
+fn get_simple_generic_type_ident(ty: &syn::Type) -> HashSet<&syn::Ident> {
+    let segment = match ty {
+        syn::Type::Path(
+            syn::TypePath {
+                path: syn::Path {
+                    ref segments,
                     ..
-                }) => Some(segments),
+                },
+                ..
+            }) => segments.last(),
+        _ => None,
+    };
+    match segment {
+        Some(syn::PathSegment {
+            arguments: syn::PathArguments::AngleBracketed(
+                syn::AngleBracketedGenericArguments { 
+                    args,
+                    .. }),
+                ..
+            }) => args.iter().filter_map(|arg| match arg {
+                syn::GenericArgument::Type(typ) => Some(get_simple_generic_type_ident(typ)),
                 _ => None,
             })
-            .filter_map(|segments| match segments.last() {
-                Some(syn::PathSegment {
-                    ref ident,
-                    arguments: syn::PathArguments::AngleBracketed(
-                        syn::AngleBracketedGenericArguments {
-                            ref args,
-                            ..
-                        })
-                    }) if ident == ty => Some(args),
-                    _ => None,
-            })
             .flatten()
-            .filter(|arg| match arg {
-                    syn::GenericArgument::Type(syn::Type::Path(syn::TypePath {
+            .collect::<HashSet<_>>(),
+        Some(syn::PathSegment {
+            ident,
+            arguments: syn::PathArguments::None,
+        }) => HashSet::from([ident]),
+        _ => HashSet::<&syn::Ident>::new(),
+    }
+}
+
+fn get_associated_generic_type<'a, T>(gen_ty: T)
+    -> impl Iterator<Item = &'a syn::Type>
+    where T : IntoIterator<Item = &'a syn::Type> {
+        gen_ty.into_iter()
+            .filter_map(|arg| match arg {
+                syn::Type::Path(
+                    syn::TypePath {
                         path: syn::Path {
                             ref segments,
                             ..
                         },
                         ..
-                    })) if segments.len() == 1 && segments.first().map_or(false, |f| f.ident == g.ident) => true,
-                    _ => false,
+                    }
+                ) => segments.last(),
+                _ => None
             })
-            .count() == 0
-        })
+            .filter_map(|ps| match ps {
+                syn::PathSegment {
+                    arguments: syn::PathArguments::AngleBracketed(
+                        syn::AngleBracketedGenericArguments {
+                            args,
+                            ..
+                        }
+                    ),
+                    ..
+                } => Some(args),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|arg| match arg {
+                 syn::GenericArgument::Type(ref gentyp @ syn::Type::Path(syn::TypePath {
+                    path: syn::Path {
+                        ref segments,
+                        ..
+                    },
+                    ..
+                    })) if segments.len() > 1 => Some(gentyp),
+                    _ => None,
+                })
 }
 
 fn add_trait_bounds(
         fields: &syn::punctuated::Punctuated<syn::Field, Token![,]>,
         mut generics: syn::Generics) -> syn::Generics {
-    for ty in get_type_params("PhantomData", fields, &mut generics) {
-        ty.bounds.push(parse_quote!(std::fmt::Debug));
+    // eprintln!("fields {:#?}", fields);
+    let gen_typs = get_type_params("PhantomData", fields).collect::<Vec<_>>();
+    // eprintln!("{:#?}", gen_typs);
+    let simple_typs = gen_typs.clone().into_iter().map(|ty| get_simple_generic_type_ident(ty)).flatten().collect::<HashSet<_>>();
+    let associated_types = get_associated_generic_type(gen_typs);
+    for param in generics.type_params_mut() {
+        if simple_typs.contains(&param.ident) {
+            param.bounds.push(parse_quote!(std::fmt::Debug));
+        }
     }
+
+    let mut where_clause_predicates = syn::punctuated::Punctuated::<syn::WherePredicate, Token![,]>::new();
+    for assoc_typ in associated_types {
+        let mut bounds = syn::punctuated::Punctuated::<syn::TypeParamBound, Token![+]>::new();
+        bounds.push(parse_quote!(std::fmt::Debug));
+        where_clause_predicates.push(syn::WherePredicate::Type(syn::PredicateType {
+            lifetimes: None,
+            bounded_ty: assoc_typ.clone(),
+            colon_token: Token![:](generics.span()),
+            bounds,
+        }));
+    }
+    if let Some(ref mut where_clause) = generics.where_clause {
+        where_clause.predicates.extend(where_clause_predicates.into_iter());
+    } else {
+        generics.where_clause = Some(syn::WhereClause {
+            where_token: Token![where](generics.span()),
+            predicates: where_clause_predicates
+        });
+    }
+
     generics
 }
 
