@@ -104,45 +104,45 @@ fn get_simple_generic_type_ident(ty: &syn::Type) -> HashSet<&syn::Ident> {
     }
 }
 
-fn get_associated_generic_type<'a, T>(gen_ty: T)
-    -> impl Iterator<Item = &'a syn::Type>
-    where T : IntoIterator<Item = &'a syn::Type> {
-        gen_ty.into_iter()
-            .filter_map(|arg| match arg {
-                syn::Type::Path(
-                    syn::TypePath {
-                        path: syn::Path {
-                            ref segments,
-                            ..
-                        },
-                        ..
-                    }
-                ) => segments.last(),
-                _ => None
-            })
-            .filter_map(|ps| match ps {
-                syn::PathSegment {
-                    arguments: syn::PathArguments::AngleBracketed(
-                        syn::AngleBracketedGenericArguments {
-                            args,
-                            ..
-                        }
-                    ),
-                    ..
-                } => Some(args),
-                _ => None,
-            })
-            .flatten()
-            .filter_map(|arg| match arg {
-                 syn::GenericArgument::Type(ref gentyp @ syn::Type::Path(syn::TypePath {
-                    path: syn::Path {
-                        ref segments,
-                        ..
-                    },
-                    ..
-                    })) if segments.len() > 1 => Some(gentyp),
-                    _ => None,
-                })
+fn get_associated_generic_type<'a>(
+        ty: &'a syn::Type,
+        generics: &HashSet<&syn::Ident>) -> HashSet<&'a syn::Type> {
+    let path_segment_is_generic = |ps: &syn::PathSegment| match ps {
+        syn::PathSegment {
+            ident,
+            arguments: syn::PathArguments::None,
+        } if generics.contains(ident) => true,
+        _ => false,
+    };
+
+    let syn::Type::Path(
+        syn::TypePath {
+            path: syn::Path { segments, .. },
+            ..
+        }) = ty else {
+            return HashSet::new();
+        };
+
+    if let Some(syn::PathSegment {
+        arguments: syn::PathArguments::AngleBracketed(
+            syn::AngleBracketedGenericArguments {
+                args,
+                ..
+            }
+        ),
+        ..
+    }) = segments.last() {
+        args.iter().filter_map(|arg| match arg {
+            syn::GenericArgument::Type(ty) => Some(get_associated_generic_type(ty, generics)),
+            _ => None,
+        })
+        .flatten()
+        .collect::<HashSet<_>>()
+    } else if segments.len() > 1 && segments.first().map_or(false, path_segment_is_generic) {
+        HashSet::from([ty])
+    } else {
+        HashSet::new()
+    }
 }
 
 fn add_trait_bounds(
@@ -152,7 +152,10 @@ fn add_trait_bounds(
     let gen_typs = get_type_params("PhantomData", fields).collect::<Vec<_>>();
     // eprintln!("{:#?}", gen_typs);
     let simple_typs = gen_typs.clone().into_iter().map(|ty| get_simple_generic_type_ident(ty)).flatten().collect::<HashSet<_>>();
-    let associated_types = get_associated_generic_type(gen_typs);
+    let generic_types = generics.type_params().map(|tp| &tp.ident).collect::<HashSet<_>>();
+    let associated_types = gen_typs.into_iter().map(|ty|
+        get_associated_generic_type(ty, &generic_types)).flatten().collect::<HashSet<_>>();
+
     for param in generics.type_params_mut() {
         if simple_typs.contains(&param.ident) {
             param.bounds.push(parse_quote!(std::fmt::Debug));
