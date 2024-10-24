@@ -8,7 +8,26 @@ use quote::quote;
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
-    // eprintln!("{:#?}", input);
+    let (bounds, errors): (Vec<_>, Vec<_>) = input
+        .attrs
+        .iter()
+        .map(get_bound)
+        .filter(|bnd| bnd.as_ref().map_or(true, Option::is_some))
+        .map(|bnd| bnd.map(|b| syn::parse_str::<syn::WherePredicate>(&b.unwrap().value())))
+        .flatten()
+        .partition(Result::is_ok);
+
+    if !errors.is_empty() {
+        let mut errors = errors.into_iter().map(syn::Result::unwrap_err);
+        let mut first = errors.next().unwrap();  // Safe since there is at least one error.
+        for err in errors {
+            first.combine(err);
+        }
+        return first.into_compile_error().into();
+    }
+    
+    let bounds = bounds.into_iter().map(syn::Result::unwrap).collect::<Vec<_>>();
+
     let name = &input.ident;
     let syn::Data::Struct(
         syn::DataStruct {
@@ -17,22 +36,38 @@ pub fn derive(input: TokenStream) -> TokenStream {
         unreachable!()
     };
 
-    let generics = add_trait_bounds(fields, input.generics);
+    // TODO(MathuxNY-73): Refactor this part.
+    let generics = if bounds.is_empty() {
+        add_trait_bounds(fields, input.generics)
+    } else {
+        input.generics
+    };
 
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
+    let where_clause = if let Some(where_clause) = where_clause {
+        let mut where_clause = where_clause.clone();
+        where_clause.predicates.extend(bounds.into_iter());
+        where_clause
+    } else {
+        let mut where_clause = syn::WhereClause {
+            predicates: Default::default(),
+            where_token: Default::default(),
+        };
+        where_clause.predicates.extend(bounds.into_iter());
+        where_clause
+    };
+
     let fields_debug = fields.iter().map(|f| {
         let name = &f.ident;
-        let dbg_fmt = get_debug_format(f);
-
-        if let Some(dbg_fmt) = dbg_fmt {
-            quote! {
+        match get_debug_format(f) {
+            Ok(Some(dbg_fmt)) => quote! {
                 .field(stringify!(#name), &std::format_args!(#dbg_fmt, &self.#name))
-            }
-        } else {
-            quote! {
+            },
+            Ok(_) => quote! {
                 .field(stringify!(#name), &self.#name)
-            }
+            },
+            Err(err) => err.into_compile_error(),
         }
     });
     let tokens = quote! {
@@ -185,36 +220,56 @@ fn add_trait_bounds(
     generics
 }
 
-fn get_debug_format(field: &syn::Field) -> Option<String> {
-    let mut fmtstrs = field.attrs.iter().filter(|attr| match attr.meta {
-        syn::Meta::NameValue(
-            syn::MetaNameValue {
-                path: syn::Path {
-                    ref segments,
+fn get_debug_format(field: &syn::Field) -> syn::Result<Option<String>> {
+    let mut fmtstrs = field.attrs.iter()
+        .filter(|attr| attr.path().is_ident("debug"))
+        .map(|attr| match attr.meta {
+            syn::Meta::NameValue(
+                syn::MetaNameValue {
+                    value: syn::Expr::Lit(
+                        syn::ExprLit {
+                            lit: syn::Lit::Str(ref fmtstr),
+                            ..
+                        }
+                    ),
                     ..
-                },
-                ..
-            }) => segments.len() == 1 && segments.last().map_or(false, |s| s.ident == "debug"),
-            _ => false
-    })
-    .map(|attr| match attr.meta {
-        syn::Meta::NameValue(
-            syn::MetaNameValue {
-                value: syn::Expr::Lit(
-                    syn::ExprLit {
-                        lit: syn::Lit::Str(ref fmtstr),
-                        ..
-                    }
-                ),
-                ..
-            }
-        ) => fmtstr.value(),
-        _ => panic!("Expected string value."),
-    })
-    .collect::<Vec<_>>();
+                }
+            ) => Ok(fmtstr.value()),
+            _ => Err(syn::Error::new(attr.meta.span(), "expected `debug = \"...\"`")),
+        })
+        .collect::<syn::Result<Vec<_>>>()?;
 
     if fmtstrs.len() > 1 {
-        panic!("Only 1 format string should be provided.");
+        return Err(syn::Error::new(field.span(), "expected to have only one `debug` argument."));
     }
-    fmtstrs.pop()
+    Ok(fmtstrs.pop())
+}
+
+fn get_bound(attr: &syn::Attribute) -> syn::Result<Option<syn::LitStr>> {
+    if !attr.path().is_ident("debug") {
+        return Ok(None);
+    }
+
+    match attr.parse_args_with(
+        syn::punctuated::Punctuated::<syn::MetaNameValue, Token![,]>::parse_terminated) {
+            Ok(mnvs) => Ok(mnvs.into_iter().filter_map(|mnv| {
+                eprintln!("{:#?}", mnv);
+                if mnv.path.is_ident("bound") {
+                    Some(mnv.value.clone())
+                } else {
+                    None
+                }
+            })
+            .filter_map(|expr| match expr {
+                syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(s),
+                    ..
+                }) => Some(s),
+                _ => None,
+            })
+            .next()),
+            Err(err) => Err(syn::Error::new(attr.span(), format!("could not parse attribute arguments: {err}"))),
+    }
+
+
 }

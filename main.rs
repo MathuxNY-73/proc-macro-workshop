@@ -10,20 +10,30 @@
 use derive_debug::CustomDebug;
 use std::fmt::Debug;
 
-#[derive(CustomDebug)]
-pub struct One<T> {
-    value: T,
-    two: Option<Box<Two<T>>>,
+pub trait Trait {
+    type Value;
 }
 
 #[derive(CustomDebug)]
-struct Two<T> {
-    one: Box<One<T>>,
+#[debug(bound = "T::Value: Debug")]
+pub struct Wrapper<T: Trait> {
+    field: Field<T>,
+}
+
+#[derive(CustomDebug)]
+struct Field<T: Trait> {
+    values: Vec<T::Value>,
 }
 
 fn assert_debug<F: Debug>() {}
 
 fn main() {
-    assert_debug::<One<u8>>();
-    assert_debug::<Two<u8>>();
+    struct Id;
+
+    impl Trait for Id {
+        type Value = u8;
+    }
+
+    assert_debug::<Wrapper<Id>>();
 }
+
