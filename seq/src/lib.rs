@@ -15,6 +15,7 @@ pub fn seq(input: TokenStream) -> TokenStream {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct Seq {
     ident: syn::Ident,
     token_in: syn::Token![in],
@@ -57,6 +58,7 @@ impl Seq {
 
         match (lower_bound.base10_parse(), upper_bound.base10_parse()) {
             (Ok(lb), Ok(ub)) => {
+                let ub = if self.token_eq.is_some() { ub + 1 } else { ub };
                 let (matched, stream) = Self::partial_match(cursor, &ident, lb, ub);
                 if matched {
                     stream
