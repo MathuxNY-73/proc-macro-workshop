@@ -1,9 +1,15 @@
 use proc_macro::TokenStream;
 
+use quote::quote;
+use syn::{Item, parse_macro_input};
+
 #[proc_macro_attribute]
 pub fn sorted(args: TokenStream, input: TokenStream) -> TokenStream {
-    let _ = args;
-    let _ = input;
+    let args = args;
+    let input = parse_macro_input!(input as Item);
+    eprintln!("args: {:#?}", args);
+    eprintln!("input: {:#?}", input);
 
-    unimplemented!()
+    let tokens = quote! {};
+    tokens.into()
 }
