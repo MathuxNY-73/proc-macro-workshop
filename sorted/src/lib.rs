@@ -1,15 +1,96 @@
 use proc_macro::TokenStream;
-use proc_macro2::TokenStream as TokenStream2;
 
-use quote::quote;
-use syn::{parse_macro_input, Item};
+use quote::{quote, ToTokens};
+use syn::{parse_macro_input, spanned::Spanned, visit_mut::{self, VisitMut}, Item};
+
+
+struct SortedVisitor {
+    is_sorted: bool,
+    arm_idents: Vec<syn::Ident>,
+    error_agg: Option<syn::Error>,
+    current_error: Option<syn::Error>,
+}
+
+fn is_sorted_attribute(attr: &syn::Attribute) -> bool {
+    match &attr.meta {
+        syn::Meta::Path(syn::Path {
+            segments,
+            ..
+        }) => segments.len() == 1 || segments.first().map_or(false, |s| s.ident == "sorted"),
+         _ => false,
+    }
+}
+
+impl visit_mut::VisitMut for SortedVisitor {
+  fn visit_expr_match_mut(&mut self, e: &mut syn::ExprMatch) {
+    self.is_sorted = e.attrs.iter().any(is_sorted_attribute);
+    if self.is_sorted {
+        e.attrs = std::mem::take(&mut e.attrs).into_iter().filter(|attr| !is_sorted_attribute(attr)).collect::<Vec<_>>();
+    }
+
+    visit_mut::visit_expr_match_mut(self, e);
+
+    if self.is_sorted && self.current_error.is_none() {
+        validate_ident_order(&std::mem::take(&mut self.arm_idents))
+            .unwrap_or_else(|e| self.current_error = Some(e));
+    }
+    self.arm_idents.clear();
+
+    match (self.current_error.take(), self.error_agg.as_mut()) {
+        (Some(e), Some(agg)) => agg.combine(e),
+        (Some(e), _) => self.error_agg = Some(e),
+        _ => (),
+    }
+  }
+
+  fn visit_arm_mut(&mut self, a: &mut syn::Arm) {
+      if self.is_sorted {
+        match a.pat {
+            syn::Pat::TupleStruct(syn::PatTupleStruct {
+                path: syn::Path { ref segments, .. },
+                ..
+            }) if segments.len() == 1 => self.arm_idents.push(segments.first().unwrap().ident.clone()),
+            ref p @ _ => {
+                let err = syn::Error::new(p.span(), format!("{:#?} pattern is not supported by sorted.", p));
+                if let Some(e) = self.current_error.as_mut() {
+                    e.combine(err);
+                } else {
+                    self.current_error = Some(err);
+                }
+            },
+        }
+      }
+
+      visit_mut::visit_arm_mut(self, a);
+  }
+}
+
 
 #[proc_macro_attribute]
-pub fn sorted(args: TokenStream, input: TokenStream) -> TokenStream {
-    let args = args;
+pub fn check(_args: TokenStream, input: TokenStream) -> TokenStream {
+    let mut input = parse_macro_input!(input as syn::ItemFn);
+
+    let mut sorted_visitor = SortedVisitor {
+        is_sorted: false,
+        arm_idents: Vec::new(),
+        error_agg: None,
+        current_error: None,
+    };
+    sorted_visitor.visit_item_fn_mut(&mut input);
+
+    let input = input.to_token_stream();
+    let tokens = if let Some(e) = sorted_visitor.error_agg {
+        let err = e.into_compile_error();
+        quote! { #input #err }
+    } else {
+        input
+    };
+    tokens.into()
+}
+
+#[proc_macro_attribute]
+pub fn sorted(_args: TokenStream, input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as Item);
-    eprintln!("args: {:#?}", args);
-    eprintln!("input: {:#?}", input);
 
     match validate(&input) {
         Ok(()) => input.to_token_stream(),
