@@ -8,19 +8,27 @@
 
 use sorted::sorted;
 
-use std::env::VarError;
-use std::error::Error as StdError;
-use std::fmt;
-use std::io;
-use std::str::Utf8Error;
-
 #[sorted]
-pub enum Error {
-    Fmt(fmt::Error),
-    Io(io::Error),
-    Utf8(Utf8Error),
-    Var(VarError),
-    Dyn(Box<dyn StdError>),
+pub enum Conference {
+    RustBeltRust,
+    RustConf,
+    RustFest,
+    RustLatam,
+    RustRush,
+}
+
+impl Conference {
+    #[sorted::check]
+    pub fn region(&self) -> &str {
+        use self::Conference::*;
+
+        #[sorted]
+        match self {
+            RustFest => "Europe",
+            RustLatam => "Latin America",
+            _ => "elsewhere",
+        }
+    }
 }
 
 fn main() {}
