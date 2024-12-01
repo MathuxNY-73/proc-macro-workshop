@@ -10,6 +10,15 @@
 //
 // From the perspective of a user of this crate, they get all the necessary APIs
 // (macro, trait, struct) through the one bitfield crate.
-pub use bitfield_impl::bitfield;
+pub use bitfield_impl::{bitfield, gen};
 
-// TODO other things
+pub trait Specifier {
+  const BITS: usize;
+
+  type T: Sized;
+
+  fn set<const ACC: usize, const SIZE: usize>(arr: &mut [u8], num: <Self as Specifier>::T);
+  fn get<const ACC: usize, const SIZE: usize>(arr: &[u8]) -> <Self as Specifier>::T;
+}
+
+gen! {}
