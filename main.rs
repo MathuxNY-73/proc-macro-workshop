@@ -6,29 +6,26 @@
 // To run the code:
 //     $ cargo run
 
-use sorted::sorted;
+use bitfield::*;
 
-#[sorted]
-pub enum Conference {
-    RustBeltRust,
-    RustConf,
-    RustFest,
-    RustLatam,
-    RustRush,
+#[bitfield]
+pub struct MyFourBytes {
+    a: B1,
+    b: B3,
+    c: B4,
+    d: B24,
 }
 
-impl Conference {
-    #[sorted::check]
-    pub fn region(&self) -> &str {
-        use self::Conference::*;
+fn main() {
+    let mut bitfield = MyFourBytes::new();
+    assert_eq!(0, bitfield.get_a());
+    assert_eq!(0, bitfield.get_b());
+    assert_eq!(0, bitfield.get_c());
+    assert_eq!(0, bitfield.get_d());
 
-        #[sorted]
-        match self {
-            RustFest => "Europe",
-            RustLatam => "Latin America",
-            _ => "elsewhere",
-        }
-    }
+    bitfield.set_c(14);
+    assert_eq!(0, bitfield.get_a());
+    assert_eq!(0, bitfield.get_b());
+    assert_eq!(14, bitfield.get_c());
+    assert_eq!(0, bitfield.get_d());
 }
-
-fn main() {}

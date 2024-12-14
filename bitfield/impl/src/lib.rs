@@ -2,13 +2,81 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 
 use quote::{ format_ident, quote };
+use syn::{parse_macro_input, spanned::Spanned, Item};
 
 #[proc_macro_attribute]
 pub fn bitfield(args: TokenStream, input: TokenStream) -> TokenStream {
-    let _ = args;
-    let _ = input;
+    let input = parse_macro_input!(input as Item);
 
-    unimplemented!()
+    let tokens = match input {
+        syn::Item::Struct(syn::ItemStruct {
+            vis,
+            fields: syn::Fields::Named(syn::FieldsNamed {
+                named,
+                ..
+            }),
+            ident,
+            ..
+        }) => {
+            let fields = named.iter().filter_map(|f| {
+                let Some(ident) = f.ident.as_ref() else {
+                    return None;
+                };
+                Some((ident, f))
+            });
+            let num_fields = fields.clone().count();
+            let f_ident = fields.clone().map(|(ident, _)| ident);
+            let ty = fields.clone().map(|(_, f)| &f.ty);
+            let viz = fields.map(|(_, f)| &f.vis);
+            let size = {
+                let ty = ty.clone();
+                quote! { #( <#ty as ::bitfield::Specifier>::BITS as usize )+* }
+            };
+
+            let width = {
+                let ty = ty.clone();
+                quote! { [#( <#ty as ::bitfield::Specifier>::BITS as usize ),*]}
+            };
+            let acc = (0..num_fields).into_iter().map(|n| {
+                let idx = 0..n;
+                quote! { 0 #( + Self::WIDTH[#idx] )* }
+            });
+            let acc_name = f_ident.clone().map(|id| format_ident!("ACC_{}", id.to_string().to_ascii_uppercase()));
+            let getter = f_ident.clone().map(|id| format_ident!("get_{}", id));
+            let setter = f_ident.clone().map(|id| format_ident!("set_{}", id));
+
+            quote! {
+                #[repr(C)]
+                #vis struct #ident {
+                    data: [u8; #size >> 3 + ((#size) % 8 != 0) as usize],
+                }
+
+                impl #ident {
+                    const SIZE: usize = #size >> 3 + ((#size) % 8 != 0) as usize;
+                    const WIDTH: [usize; #num_fields] = #width;
+
+                    #vis fn new() -> Self {
+                        Self { data: ::std::default::Default::default() }
+                    }
+
+                    #(
+                        const #acc_name: usize = #acc;
+
+                        #viz fn #getter(&self) -> <#ty as ::bitfield::Specifier>::T {
+                            <#ty as ::bitfield::Specifier>::get::<{Self::#acc_name}, {Self::SIZE}>(&self.data)
+                        }
+
+                        #viz fn #setter(&mut self, #f_ident: <#ty as ::bitfield::Specifier>::T) {
+                            <#ty as ::bitfield::Specifier>::set::<{Self::#acc_name}, {Self::SIZE}>(&mut self.data, #f_ident);
+                        }
+                    )*
+                }
+            }
+        },
+        _ => unimplemented!()
+    };
+
+    tokens.into()
 }
 
 #[proc_macro]
