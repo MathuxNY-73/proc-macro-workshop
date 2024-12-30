@@ -249,6 +249,109 @@ impl<const BITS: usize, const START: usize, const SIZE: usize> BitsU16<BITS, STA
   }
 }
 
+struct BitsU32<const BITS: usize, const START: usize, const SIZE: usize>;
+
+impl<const BITS: usize, const START: usize, const SIZE: usize> SetGet<BITS, START, SIZE> for BitsU32<BITS, START, SIZE> {
+  type Target = u32;
+
+  const MASK_LHS: Self::Target = if Self::OFFSET == 0 { 0 }
+    else { u32::MAX << (u32::BITS as usize - Self::OFFSET) };
+
+  const IS_ACROSS: bool = Self::OFFSET + BITS > u32::BITS as usize;
+  const GET: fn(&[u8]) -> Self::Target = if Self::IS_ACROSS {
+    Self::get_bits_accross
+  } else {
+    Self::get_bits
+  };
+  const SET: fn(&mut [u8], Self::Target) -> anyhow::Result<()> = if Self::IS_ACROSS {
+    Self::set_bits_accross
+  } else {
+    Self::set_bits
+  };
+}
+
+impl<const BITS: usize, const START: usize, const SIZE: usize> BitsU32<BITS, START, SIZE> {
+  const CHECK_: () = [()][(BITS > u32::BITS as usize ||
+                           BITS <= u16::BITS as usize) as usize];
+  const READ: fn([u8; 4]) -> u32 = if cfg!(target_endian = "big") {
+    u32::from_le_bytes
+  } else {
+    u32::from_be_bytes
+  };
+  const WRITE: fn(u32) -> [u8; 4] = if cfg!(target_endian = "big") {
+    u32::to_le_bytes
+  } else {
+    u32::to_be_bytes
+  };
+
+  const fn does_fit(val: u32) -> bool {
+    let val_num_bits = (u32::BITS - val.leading_zeros()) as usize;
+    val_num_bits <= BITS
+  }
+
+  fn set_bits(data: &mut [u8], val: u32) -> anyhow::Result<()> {
+    let _ = Self::CHECK_;
+    if !Self::does_fit(val) {
+      bail!(OverflowError::<BITS, u32>(val));
+    }
+
+    let slice = &mut data[Self::START_IDX..=Self::END_IDX];
+    let old_val = Self::READ(slice.try_into().unwrap());
+    let new_val = old_val & (Self::MASK_LHS ^ Self::MASK_RHS as u32) | val << (u32::BITS as usize - BITS - Self::OFFSET);
+    slice.copy_from_slice(&Self::WRITE(new_val));
+    Ok(())
+  }
+
+  fn get_bits(data: &[u8]) -> u32 {
+    let _ = Self::CHECK_;
+
+    let slice = &data[Self::START_IDX..=Self::END_IDX];
+    let val = Self::READ(slice.try_into().unwrap());
+    // println!("lhs = {:016b}, rhs = {:016b}, lhs ^ rhs = {:016b}", Self::MASK_LHS, Self::MASK_RHS, Self::MASK_LHS ^ Self::MASK_RHS as u16);
+    // println!("{:016b}", !(Self::MASK_LHS ^ Self::MASK_RHS as u16));
+    // println!("val = {:016b}, res={:016b}", val, (val & !(Self::MASK_LHS ^ Self::MASK_RHS as u16)));
+    // println!("shift = {}", (u16::BITS as usize - BITS - Self::OFFSET));
+    // println!("res={:016b}", (val & !(Self::MASK_LHS ^ Self::MASK_RHS as u16)) >> (u16::BITS as usize - BITS - Self::OFFSET));
+    (val & !(Self::MASK_LHS ^ Self::MASK_RHS as u32)) >> (u32::BITS as usize - BITS - Self::OFFSET)
+  }
+
+  fn set_bits_accross(
+      data: &mut [u8], val: u32) -> anyhow::Result<()> {
+    let _ = Self::CHECK_;
+
+    if !Self::does_fit(val) {
+      bail!(OverflowError::<BITS, u32>(val));
+    }
+
+    let lhs_slice = &mut data[Self::START_IDX..Self::END_IDX];
+    let lhs = Self::READ(lhs_slice.try_into().unwrap());
+    let new_lhs = lhs & Self::MASK_LHS | val >> (BITS + Self::OFFSET - u32::BITS as usize);
+    lhs_slice.copy_from_slice(&Self::WRITE(new_lhs));
+
+    let rhs_slice = &mut data[Self::END_IDX..=Self::END_IDX];
+    let rhs = u8::from_ne_bytes(rhs_slice.try_into().unwrap());
+    let new_rhs = rhs & Self::MASK_RHS | ((val & u8::MAX as u32) as u8) << (u8::BITS as usize - ((BITS + Self::OFFSET) % 8));
+    rhs_slice.copy_from_slice(&new_rhs.to_ne_bytes());
+
+    Ok(())
+  }
+
+  fn get_bits_accross(data: &[u8]) -> u32 {
+    let _ = Self::CHECK_;
+
+    let lhs_slice = &data[Self::START_IDX..Self::END_IDX];
+    println!("lhs_slice size: {}", lhs_slice.len());
+    let lhs = Self::READ(lhs_slice.try_into().unwrap());
+    let lhs = (lhs & !Self::MASK_LHS) << (BITS + Self::OFFSET - u32::BITS as usize);
+
+    let rhs_slice = &data[Self::END_IDX..=Self::END_IDX];
+    let rhs = u8::from_ne_bytes(rhs_slice.try_into().unwrap());
+    let rhs = (rhs & !Self::MASK_RHS) >> (u8::BITS as usize - ((BITS + Self::OFFSET) % 8));
+
+    lhs | (rhs as u32)
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -328,42 +431,63 @@ mod tests {
     assert_eq!(BitsU16::<10, 7, 5>::GET(&data), 0x01E0);
   }
 
-  fn print_data<'a>(data: impl IntoIterator<Item = &'a u8>) {
-    eprintln!("[{}]",
-      data
-        .into_iter()
-        .map(|d| format!("{d:#02x}")).collect::<Vec<_>>().join(","));
-  }
-
   #[test]
   fn test_set_bits_u16() {
     let mut data = [0xAA, 0xF0, 0x33, 0xCC, 0x3C];
-
-    print_data(&data);
 
     // Inside 2 u8s
     assert!(BitsU16::<10, 16, 5>::SET(&mut data, 0x0156).is_ok());
     assert_eq!(BitsU16::<10, 16, 5>::GET(&data), 0x0156);
 
-    print_data(&data);
-
     assert!(BitsU16::<9, 3, 5>::SET(&mut data, 0x015D).is_ok());
     assert_eq!(BitsU16::<9, 3, 5>::GET(&data), 0x015D);
-
-    print_data(&data);
 
     // Accross 3 u8s
     assert!(BitsU16::<16, 20, 5>::SET(&mut data, 0xD528).is_ok());
     assert_eq!(BitsU16::<16, 20, 5>::GET(&data), 0xD528);
 
-    print_data(&data);
-
     assert!(BitsU16::<10, 7, 5>::SET(&mut data, 0x02B7).is_ok());
     assert_eq!(BitsU16::<10, 7, 5>::GET(&data), 0x02B7);
 
-    print_data(&data);
-
     assert_eq!(data, [0xB5, 0x5B, 0xDD, 0x52, 0x8C]);
+  }
+
+  #[test]
+  fn test_get_bits_u32() {
+    let data = [0xAA, 0xF0, 0x33, 0xCC, 0x3C];
+
+    // Inside 4 u8s
+    assert_eq!(BitsU32::<18, 7, 5>::END_IDX, 3);
+    assert_eq!(BitsU32::<18, 7, 5>::START_IDX, 0);
+    assert_eq!(BitsU32::<18, 7, 5>::OFFSET, 7);
+    assert_eq!(BitsU32::<18, 7, 5>::MASK_LHS, 0xFE000000);
+    assert_eq!(BitsU32::<18, 7, 5>::MASK_RHS, 0b01111111);
+    assert_eq!(BitsU32::<18, 7, 5>::GET(&data), 0x0001E067);
+
+    // Accross 5 u8s
+    assert_eq!(BitsU32::<29, 6, 5>::END_IDX, 4);
+    assert_eq!(BitsU32::<29, 6, 5>::START_IDX, 0);
+    assert_eq!(BitsU32::<29, 6, 5>::OFFSET, 6);
+    assert_eq!(BitsU32::<29, 6, 5>::MASK_LHS, 0xFC000000);
+    assert_eq!(BitsU32::<29, 6, 5>::MASK_RHS, 0b00011111);
+    assert_eq!(BitsU32::<29, 6, 5>::GET(&data), 0x17819E61);
+  }
+
+  #[test]
+  fn test_set_bits_u32() {
+    let mut data = [0xAA, 0xF0, 0x33, 0xCC, 0x3C];
+
+    // Inside 4 u8s
+    assert!(BitsU32::<32, 0, 5>::SET(&mut data, 0xC75B0814).is_ok());
+    assert_eq!(BitsU32::<32, 0, 5>::GET(&data), 0xC75B0814);
+
+    assert_eq!(data, [0xC7, 0x5B, 0x08, 0x14, 0x3C]);
+
+    // Accross 5 u8s
+    assert!(BitsU32::<32, 7, 5>::SET(&mut data, 0x2036D751).is_ok());
+    assert_eq!(BitsU32::<32, 7, 5>::GET(&data), 0x2036D751);
+
+    assert_eq!(data, [0xC6, 0x40, 0x6D, 0xAE, 0xA2]);
   }
 
   #[test]
