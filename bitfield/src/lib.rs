@@ -205,11 +205,6 @@ impl<const BITS: usize, const START: usize, const SIZE: usize> BitsU16<BITS, STA
 
     let slice = &data[Self::START_IDX..=Self::END_IDX];
     let val = Self::READ(slice.try_into().unwrap());
-    // println!("lhs = {:016b}, rhs = {:016b}, lhs ^ rhs = {:016b}", Self::MASK_LHS, Self::MASK_RHS, Self::MASK_LHS ^ Self::MASK_RHS as u16);
-    // println!("{:016b}", !(Self::MASK_LHS ^ Self::MASK_RHS as u16));
-    // println!("val = {:016b}, res={:016b}", val, (val & !(Self::MASK_LHS ^ Self::MASK_RHS as u16)));
-    // println!("shift = {}", (u16::BITS as usize - BITS - Self::OFFSET));
-    // println!("res={:016b}", (val & !(Self::MASK_LHS ^ Self::MASK_RHS as u16)) >> (u16::BITS as usize - BITS - Self::OFFSET));
     (val & !(Self::MASK_LHS ^ Self::MASK_RHS as u16)) >> (u16::BITS as usize - BITS - Self::OFFSET)
   }
 
@@ -283,6 +278,11 @@ impl<const BITS: usize, const START: usize, const SIZE: usize> BitsU32<BITS, STA
   } else {
     u32::to_be_bytes
   };
+  const SHIFT: usize = if Self::END_IDX - Self::START_IDX < 3 {
+    (3 - Self::END_IDX + Self::START_IDX) * 8
+  } else {
+    0
+  };
 
   const fn does_fit(val: u32) -> bool {
     let val_num_bits = (u32::BITS - val.leading_zeros()) as usize;
@@ -295,9 +295,11 @@ impl<const BITS: usize, const START: usize, const SIZE: usize> BitsU32<BITS, STA
       bail!(OverflowError::<BITS, u32>(val));
     }
 
-    let slice = &mut data[Self::START_IDX..=Self::END_IDX];
+    let slice = &mut data[Self::START_IDX..Self::START_IDX + 4];
+    let mask_rhs = (Self::MASK_RHS as u32) << Self::SHIFT;
+    let mask_rhs = if mask_rhs > 1 { mask_rhs | (mask_rhs - 1) } else { mask_rhs };
     let old_val = Self::READ(slice.try_into().unwrap());
-    let new_val = old_val & (Self::MASK_LHS ^ Self::MASK_RHS as u32) | val << (u32::BITS as usize - BITS - Self::OFFSET);
+    let new_val = old_val & (Self::MASK_LHS ^ mask_rhs) | val << (u32::BITS as usize - BITS - Self::OFFSET);
     slice.copy_from_slice(&Self::WRITE(new_val));
     Ok(())
   }
@@ -305,14 +307,11 @@ impl<const BITS: usize, const START: usize, const SIZE: usize> BitsU32<BITS, STA
   fn get_bits(data: &[u8]) -> u32 {
     let _ = Self::CHECK_;
 
-    let slice = &data[Self::START_IDX..=Self::END_IDX];
+    let slice = &data[Self::START_IDX..Self::START_IDX + 4];
     let val = Self::READ(slice.try_into().unwrap());
-    // println!("lhs = {:016b}, rhs = {:016b}, lhs ^ rhs = {:016b}", Self::MASK_LHS, Self::MASK_RHS, Self::MASK_LHS ^ Self::MASK_RHS as u16);
-    // println!("{:016b}", !(Self::MASK_LHS ^ Self::MASK_RHS as u16));
-    // println!("val = {:016b}, res={:016b}", val, (val & !(Self::MASK_LHS ^ Self::MASK_RHS as u16)));
-    // println!("shift = {}", (u16::BITS as usize - BITS - Self::OFFSET));
-    // println!("res={:016b}", (val & !(Self::MASK_LHS ^ Self::MASK_RHS as u16)) >> (u16::BITS as usize - BITS - Self::OFFSET));
-    (val & !(Self::MASK_LHS ^ Self::MASK_RHS as u32)) >> (u32::BITS as usize - BITS - Self::OFFSET)
+    let mask_rhs = (Self::MASK_RHS as u32) << Self::SHIFT;
+    let mask_rhs = if mask_rhs > 1 { mask_rhs | (mask_rhs - 1) } else { mask_rhs };
+    (val & !(Self::MASK_LHS ^ mask_rhs)) >> (u32::BITS as usize - BITS - Self::OFFSET)
   }
 
   fn set_bits_accross(
@@ -349,6 +348,122 @@ impl<const BITS: usize, const START: usize, const SIZE: usize> BitsU32<BITS, STA
     let rhs = (rhs & !Self::MASK_RHS) >> (u8::BITS as usize - ((BITS + Self::OFFSET) % 8));
 
     lhs | (rhs as u32)
+  }
+}
+
+struct BitsU64<const BITS: usize, const START: usize, const SIZE: usize>;
+
+impl<const BITS: usize, const START: usize, const SIZE: usize> SetGet<BITS, START, SIZE> for BitsU64<BITS, START, SIZE> {
+  type Target = u64;
+
+  const MASK_LHS: Self::Target = if Self::OFFSET == 0 { 0 }
+    else { Self::Target::MAX << (Self::Target::BITS as usize - Self::OFFSET) };
+
+  const IS_ACROSS: bool = Self::OFFSET + BITS > Self::Target::BITS as usize;
+  const GET: fn(&[u8]) -> Self::Target = if Self::IS_ACROSS {
+    Self::get_bits_accross
+  } else {
+    Self::get_bits
+  };
+  const SET: fn(&mut [u8], Self::Target) -> anyhow::Result<()> = if Self::IS_ACROSS {
+    Self::set_bits_accross
+  } else {
+    Self::set_bits
+  };
+}
+
+impl<const BITS: usize, const START: usize, const SIZE: usize> BitsU64<BITS, START, SIZE> {
+  const CHECK_: () = [()][(BITS > u64::BITS as usize ||
+                           BITS <= u32::BITS as usize) as usize];
+  const READ: fn([u8; 8]) -> u64 = if cfg!(target_endian = "big") {
+    u64::from_le_bytes
+  } else {
+    u64::from_be_bytes
+  };
+  const WRITE: fn(u64) -> [u8; 8] = if cfg!(target_endian = "big") {
+    u64::to_le_bytes
+  } else {
+    u64::to_be_bytes
+  };
+  const SHIFT: usize = if Self::END_IDX - Self::START_IDX < 7 {
+    (7 - Self::END_IDX + Self::START_IDX) * 8
+  } else {
+    0
+  };
+
+  const fn does_fit(val: u64) -> bool {
+    let val_num_bits = (u64::BITS - val.leading_zeros()) as usize;
+    val_num_bits <= BITS
+  }
+
+  fn set_bits(data: &mut [u8], val: u64) -> anyhow::Result<()> {
+    let _ = Self::CHECK_;
+    if !Self::does_fit(val) {
+      bail!(OverflowError::<BITS, u64>(val));
+    }
+
+    let slice = &mut data[Self::START_IDX..Self::START_IDX + 8];
+    let mask_rhs = (Self::MASK_RHS as u64) << Self::SHIFT;
+    let mask_rhs = if mask_rhs > 1 { mask_rhs | (mask_rhs - 1) } else { mask_rhs };
+    let old_val = Self::READ(slice.try_into().unwrap());
+    let new_val = old_val & (Self::MASK_LHS ^ mask_rhs) | val << (u64::BITS as usize - BITS - Self::OFFSET);
+    slice.copy_from_slice(&Self::WRITE(new_val));
+    Ok(())
+  }
+
+  fn get_bits(data: &[u8]) -> u64 {
+    let _ = Self::CHECK_;
+
+    let slice = &data[Self::START_IDX..Self::START_IDX + 8];
+    println!("Slice len: {}", slice.len());
+    for i in slice {
+      println!("{i:#2x}");
+    }
+    let val = Self::READ(slice.try_into().unwrap());
+    let mask_rhs = (Self::MASK_RHS as u64) << Self::SHIFT;
+    let mask_rhs = if mask_rhs > 1 { mask_rhs | (mask_rhs - 1) } else { mask_rhs };
+    // println!("mask_rhs = {:016x}", mask_rhs);
+    // println!("lhs = {:016x}, rhs = {:016x}, lhs ^ rhs = {:016x}", Self::MASK_LHS, mask_rhs, Self::MASK_LHS ^ mask_rhs);
+    // println!("!(lhs ^ rhs) = {:016x}", !(Self::MASK_LHS ^ mask_rhs));
+    // println!("val = {:016x}, res={:016x}", val, (val & !(Self::MASK_LHS ^ mask_rhs)));
+    // println!("shift = {}", (u64::BITS as usize - BITS - Self::OFFSET));
+    // println!("res={:016x}", (val & !(Self::MASK_LHS ^ mask_rhs)) >> (u64::BITS as usize - BITS - Self::OFFSET));
+    (val & !(Self::MASK_LHS ^ mask_rhs)) >> (u64::BITS as usize - BITS - Self::OFFSET)
+  }
+
+  fn set_bits_accross(
+      data: &mut [u8], val: u64) -> anyhow::Result<()> {
+    let _ = Self::CHECK_;
+
+    if !Self::does_fit(val) {
+      bail!(OverflowError::<BITS, u64>(val));
+    }
+
+    let lhs_slice = &mut data[Self::START_IDX..Self::END_IDX];
+    let lhs = Self::READ(lhs_slice.try_into().unwrap());
+    let new_lhs = lhs & Self::MASK_LHS | val >> (BITS + Self::OFFSET - u64::BITS as usize);
+    lhs_slice.copy_from_slice(&Self::WRITE(new_lhs));
+
+    let rhs_slice = &mut data[Self::END_IDX..=Self::END_IDX];
+    let rhs = u8::from_ne_bytes(rhs_slice.try_into().unwrap());
+    let new_rhs = rhs & Self::MASK_RHS | ((val & u8::MAX as u64) as u8) << (u8::BITS as usize - ((BITS + Self::OFFSET) % 8));
+    rhs_slice.copy_from_slice(&new_rhs.to_ne_bytes());
+
+    Ok(())
+  }
+
+  fn get_bits_accross(data: &[u8]) -> u64 {
+    let _ = Self::CHECK_;
+
+    let lhs_slice = &data[Self::START_IDX..Self::END_IDX];
+    let lhs = Self::READ(lhs_slice.try_into().unwrap());
+    let lhs = (lhs & !Self::MASK_LHS) << (BITS + Self::OFFSET - u64::BITS as usize);
+
+    let rhs_slice = &data[Self::END_IDX..=Self::END_IDX];
+    let rhs = u8::from_ne_bytes(rhs_slice.try_into().unwrap());
+    let rhs = (rhs & !Self::MASK_RHS) >> (u8::BITS as usize - ((BITS + Self::OFFSET) % 8));
+
+    lhs | (rhs as u64)
   }
 }
 
@@ -457,6 +572,13 @@ mod tests {
     let data = [0xAA, 0xF0, 0x33, 0xCC, 0x3C];
 
     // Inside 4 u8s
+    assert_eq!(BitsU32::<18, 8, 5>::END_IDX, 3);
+    assert_eq!(BitsU32::<18, 8, 5>::START_IDX, 1);
+    assert_eq!(BitsU32::<18, 8, 5>::OFFSET, 0);
+    assert_eq!(BitsU32::<18, 8, 5>::MASK_LHS, 0x00000000);
+    assert_eq!(BitsU32::<18, 8, 5>::MASK_RHS, 0b00111111);
+    assert_eq!(BitsU32::<18, 8, 5>::GET(&data), 0x0003C0CF);
+
     assert_eq!(BitsU32::<18, 7, 5>::END_IDX, 3);
     assert_eq!(BitsU32::<18, 7, 5>::START_IDX, 0);
     assert_eq!(BitsU32::<18, 7, 5>::OFFSET, 7);
@@ -524,5 +646,59 @@ mod tests {
       0b10011100,
       0b00111100
     ]);
+  }
+
+  #[test]
+  fn test_get_bits_u64() {
+    let data = [0xAA, 0xF0, 0x33, 0xCC,
+                         0x3C, 0x8D, 0xA2, 0x9B,
+                         0x7F];
+
+    // 10101010
+    // 11110000
+    // 00110011
+    // 11001100
+    // 00111100
+    // 10001101
+    // 10100010
+    // 10011011
+    // 01111111
+
+    // Inside 8 u8s
+    assert_eq!(BitsU64::<48, 12, 9>::END_IDX, 7);
+    assert_eq!(BitsU64::<48, 12, 9>::START_IDX, 1);
+    assert_eq!(BitsU64::<48, 12, 9>::OFFSET, 4);
+    assert_eq!(BitsU64::<48, 12, 9>::MASK_LHS, 0xF000000000000000);
+    assert_eq!(BitsU64::<48, 12, 9>::MASK_RHS, 0b00001111);
+    assert_eq!(BitsU64::<48, 12, 9>::SHIFT, 8);
+    assert_eq!(BitsU64::<48, 12, 9>::GET(&data), 0x0000033CC3C8DA29);
+
+    // Accross 9 u8s
+    assert_eq!(BitsU64::<60, 6, 5>::END_IDX, 8);
+    assert_eq!(BitsU64::<60, 6, 5>::START_IDX, 0);
+    assert_eq!(BitsU64::<60, 6, 5>::OFFSET, 6);
+    assert_eq!(BitsU64::<60, 6, 5>::MASK_LHS, 0xFC00000000000000);
+    assert_eq!(BitsU64::<60, 6, 5>::MASK_RHS, 0b00111111);
+    assert_eq!(BitsU64::<60, 6, 5>::SHIFT, 0);
+    assert_eq!(BitsU64::<60, 6, 5>::GET(&data), 0x0BC0CF30F2368A6D);
+  }
+
+  #[test]
+  fn test_set_bits_u64() {
+    let mut data = [0xAA, 0xF0, 0x33, 0xCC,
+                         0x3C, 0x8D, 0xA2, 0x9B,
+                         0x7F];
+
+    // Inside 8 u8s
+    assert!(BitsU64::<64, 0, 9>::SET(&mut data, 0x83F7B0EA264BC501).is_ok());
+    assert_eq!(BitsU64::<64, 0, 9>::GET(&data), 0x83F7B0EA264BC501);
+
+    assert_eq!(data, [0x83, 0xF7, 0xB0, 0xEA, 0x26, 0x4B, 0xC5, 0x01, 0x7F]);
+
+    // Accross 9 u8s
+    assert!(BitsU64::<64, 7, 9>::SET(&mut data, 0x0123456789ABCDEF).is_ok());
+    assert_eq!(BitsU64::<64, 7, 9>::GET(&data), 0x0123456789ABCDEF);
+
+    assert_eq!(data, [0x82, 0x02, 0x46, 0x8A, 0xCF, 0x13, 0x57, 0x9B, 0xDF]);
   }
 }
