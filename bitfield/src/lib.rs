@@ -33,6 +33,7 @@ struct OverflowError<const BITS: usize, T>(T);
 trait SetGet<const BITS: usize, const START: usize, const SIZE: usize> {
   type Target;
 
+  const BYTES: usize;
   const START_IDX: usize = START / u8::BITS as usize;
   const END_IDX: usize = (START + BITS -  1) / u8::BITS as usize;
   const OFFSET: usize = START % u8::BITS as usize;
@@ -43,7 +44,7 @@ trait SetGet<const BITS: usize, const START: usize, const SIZE: usize> {
 
   const MASK_LHS: Self::Target;
   const MASK_RHS: u8 =
-    if Self::OFFSET == 0 && BITS % 8 == 0 { 0 }
+    if (Self::OFFSET + BITS) % 8 == 0 { 0 }
     else {
       u8::MAX >> ((BITS + Self::OFFSET) % 8)
     };
@@ -58,7 +59,7 @@ impl<
   const START: usize,
   const SIZE: usize,
   T: SetGet<BITS, START, SIZE> + ?Sized> CheckInBoundary<BITS, START, SIZE> for T {
-    const CHECK: () = [()][(Self::END_IDX >= SIZE) as usize];
+    const CHECK: () = [()][(Self::START_IDX + Self::BYTES >= SIZE) as usize];
 }
 
 struct BitsU8<const BITS: usize, const START: usize, const SIZE: usize>;
@@ -66,6 +67,7 @@ struct BitsU8<const BITS: usize, const START: usize, const SIZE: usize>;
 impl<const BITS: usize, const START: usize, const SIZE: usize> SetGet<BITS, START, SIZE> for BitsU8<BITS, START, SIZE> {
   type Target = u8;
 
+  const BYTES: usize = 1;
   const MASK_LHS: u8 = if Self::OFFSET == 0 { 0 }
     else { u8::MAX << (u8::BITS as usize - Self::OFFSET) };
   const IS_ACROSS: bool = Self::OFFSET + BITS > u8::BITS as usize;
@@ -152,6 +154,7 @@ struct BitsU16<const BITS: usize, const START: usize, const SIZE: usize>;
 impl<const BITS: usize, const START: usize, const SIZE: usize> SetGet<BITS, START, SIZE> for BitsU16<BITS, START, SIZE> {
   type Target = u16;
 
+  const BYTES: usize = 2;
   const MASK_LHS: Self::Target = if Self::OFFSET == 0 { 0 }
     else { u16::MAX << (u16::BITS as usize - Self::OFFSET) };
 
@@ -249,6 +252,7 @@ struct BitsU32<const BITS: usize, const START: usize, const SIZE: usize>;
 impl<const BITS: usize, const START: usize, const SIZE: usize> SetGet<BITS, START, SIZE> for BitsU32<BITS, START, SIZE> {
   type Target = u32;
 
+  const BYTES: usize = 4;
   const MASK_LHS: Self::Target = if Self::OFFSET == 0 { 0 }
     else { u32::MAX << (u32::BITS as usize - Self::OFFSET) };
 
@@ -295,22 +299,29 @@ impl<const BITS: usize, const START: usize, const SIZE: usize> BitsU32<BITS, STA
       bail!(OverflowError::<BITS, u32>(val));
     }
 
-    let slice = &mut data[Self::START_IDX..Self::START_IDX + 4];
+    let slice = &mut data[Self::START_IDX..=Self::END_IDX];
+    let mut bytes = [0u8; 4];
+    bytes[..=Self::END_IDX - Self::START_IDX].copy_from_slice(slice);
+
     let mask_rhs = (Self::MASK_RHS as u32) << Self::SHIFT;
     let mask_rhs = if mask_rhs > 1 { mask_rhs | (mask_rhs - 1) } else { mask_rhs };
     let old_val = Self::READ(slice.try_into().unwrap());
     let new_val = old_val & (Self::MASK_LHS ^ mask_rhs) | val << (u32::BITS as usize - BITS - Self::OFFSET);
-    slice.copy_from_slice(&Self::WRITE(new_val));
+    slice.copy_from_slice(&Self::WRITE(new_val)[..=Self::END_IDX - Self::START_IDX]);
     Ok(())
   }
 
   fn get_bits(data: &[u8]) -> u32 {
     let _ = Self::CHECK_;
 
-    let slice = &data[Self::START_IDX..Self::START_IDX + 4];
-    let val = Self::READ(slice.try_into().unwrap());
     let mask_rhs = (Self::MASK_RHS as u32) << Self::SHIFT;
     let mask_rhs = if mask_rhs > 1 { mask_rhs | (mask_rhs - 1) } else { mask_rhs };
+
+    let slice = &data[Self::START_IDX..=Self::END_IDX];
+    let mut bytes = [0u8; 4];
+    bytes[..=Self::END_IDX - Self::START_IDX].copy_from_slice(slice);
+
+    let val = Self::READ(bytes);
     (val & !(Self::MASK_LHS ^ mask_rhs)) >> (u32::BITS as usize - BITS - Self::OFFSET)
   }
 
@@ -339,7 +350,6 @@ impl<const BITS: usize, const START: usize, const SIZE: usize> BitsU32<BITS, STA
     let _ = Self::CHECK_;
 
     let lhs_slice = &data[Self::START_IDX..Self::END_IDX];
-    println!("lhs_slice size: {}", lhs_slice.len());
     let lhs = Self::READ(lhs_slice.try_into().unwrap());
     let lhs = (lhs & !Self::MASK_LHS) << (BITS + Self::OFFSET - u32::BITS as usize);
 
@@ -356,6 +366,7 @@ struct BitsU64<const BITS: usize, const START: usize, const SIZE: usize>;
 impl<const BITS: usize, const START: usize, const SIZE: usize> SetGet<BITS, START, SIZE> for BitsU64<BITS, START, SIZE> {
   type Target = u64;
 
+  const BYTES: usize = 8;
   const MASK_LHS: Self::Target = if Self::OFFSET == 0 { 0 }
     else { Self::Target::MAX << (Self::Target::BITS as usize - Self::OFFSET) };
 
@@ -402,24 +413,27 @@ impl<const BITS: usize, const START: usize, const SIZE: usize> BitsU64<BITS, STA
       bail!(OverflowError::<BITS, u64>(val));
     }
 
-    let slice = &mut data[Self::START_IDX..Self::START_IDX + 8];
+    let slice = &mut data[Self::START_IDX..=Self::END_IDX];
+    let mut bytes = [0u8; 8];
+    bytes[..=Self::END_IDX - Self::START_IDX].copy_from_slice(slice);
+
     let mask_rhs = (Self::MASK_RHS as u64) << Self::SHIFT;
     let mask_rhs = if mask_rhs > 1 { mask_rhs | (mask_rhs - 1) } else { mask_rhs };
-    let old_val = Self::READ(slice.try_into().unwrap());
+    let old_val = Self::READ(bytes);
     let new_val = old_val & (Self::MASK_LHS ^ mask_rhs) | val << (u64::BITS as usize - BITS - Self::OFFSET);
-    slice.copy_from_slice(&Self::WRITE(new_val));
+
+    slice.copy_from_slice(&Self::WRITE(new_val)[..=Self::END_IDX - Self::START_IDX]);
     Ok(())
   }
 
   fn get_bits(data: &[u8]) -> u64 {
     let _ = Self::CHECK_;
 
-    let slice = &data[Self::START_IDX..Self::START_IDX + 8];
-    println!("Slice len: {}", slice.len());
-    for i in slice {
-      println!("{i:#2x}");
-    }
-    let val = Self::READ(slice.try_into().unwrap());
+    let slice = &data[Self::START_IDX..=Self::END_IDX];
+    let mut bytes = [0u8; 8];
+    bytes[..=Self::END_IDX - Self::START_IDX].copy_from_slice(slice);
+
+    let val = Self::READ(bytes);
     let mask_rhs = (Self::MASK_RHS as u64) << Self::SHIFT;
     let mask_rhs = if mask_rhs > 1 { mask_rhs | (mask_rhs - 1) } else { mask_rhs };
     // println!("mask_rhs = {:016x}", mask_rhs);

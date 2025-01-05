@@ -100,11 +100,11 @@ pub fn gen(_: TokenStream) -> TokenStream {
                 type T = ::core::primitive::#u_ident;
 
                 fn set<const ACC: usize, const SIZE: usize>(arr: &mut [u8], num: <Self as Specifier>::T) {
-                    unimplemented!()
+                    #bits_u::<{Self::BITS}, ACC, SIZE>::SET(arr, num).unwrap()
                 }
 
                 fn get<const ACC: usize, const SIZE: usize>(arr: &[u8]) -> <Self as Specifier>::T {
-                    unimplemented!()
+                    #bits_u::<{Self::BITS}, ACC, SIZE>::GET(arr)
                 }
             }
         )*
