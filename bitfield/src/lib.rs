@@ -306,7 +306,7 @@ impl<const BITS: usize, const START: usize, const SIZE: usize> BitsU32<BITS, STA
 
     let mask_rhs = (Self::MASK_RHS as u32) << Self::SHIFT;
     let mask_rhs = if mask_rhs > 1 { mask_rhs | (mask_rhs - 1) } else { mask_rhs };
-    let old_val = Self::READ(slice.try_into().unwrap());
+    let old_val = Self::READ(bytes);
     let new_val = old_val & (Self::MASK_LHS ^ mask_rhs) | val << (u32::BITS as usize - BITS - Self::OFFSET);
     slice.copy_from_slice(&Self::WRITE(new_val)[..=Self::END_IDX - Self::START_IDX]);
     Ok(())
