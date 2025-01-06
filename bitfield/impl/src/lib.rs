@@ -46,31 +46,33 @@ pub fn bitfield(_args: TokenStream, input: TokenStream) -> TokenStream {
                 #[repr(C)]
                 #vis struct #ident {
                     data: [u8; #size >> 3 + ((#size) % 8 != 0) as usize],
-                    _check: ::bitfield::checks::MultipleOfEight<[(); (#size as usize) % 8]>
                 }
 
-                impl #ident {
-                    const SIZE: usize = #size >> 3 + ((#size) % 8 != 0) as usize;
+                const _: () ={
+                    impl #ident {
+                        const SIZE: usize = #size >> 3 + ((#size) % 8 != 0) as usize;
 
-                    #vis fn new() -> Self {
-                        Self {
-                            data: ::std::default::Default::default(),
-                            _check: <::bitfield::checks::ZeroMod8 as ::bitfield::checks::TotalSizeIsMultipleOfEightBits>::Check::default(),
+                        #vis fn new() -> Self {
+                            Self {
+                                data: ::std::default::Default::default(),
+                            }
                         }
+
+                        #(
+                            const #start_name: usize = #start;
+
+                            #viz fn #getter(&self) -> <#ty as ::bitfield::Specifier>::T {
+                                <#ty as ::bitfield::Specifier>::get::<{Self::#start_name}, {Self::SIZE}>(&self.data)
+                            }
+
+                            #viz fn #setter(&mut self, #f_ident: <#ty as ::bitfield::Specifier>::T) {
+                                <#ty as ::bitfield::Specifier>::set::<{Self::#start_name}, {Self::SIZE}>(&mut self.data, #f_ident);
+                            }
+                        )*
                     }
 
-                    #(
-                        const #start_name: usize = #start;
-
-                        #viz fn #getter(&self) -> <#ty as ::bitfield::Specifier>::T {
-                            <#ty as ::bitfield::Specifier>::get::<{Self::#start_name}, {Self::SIZE}>(&self.data)
-                        }
-
-                        #viz fn #setter(&mut self, #f_ident: <#ty as ::bitfield::Specifier>::T) {
-                            <#ty as ::bitfield::Specifier>::set::<{Self::#start_name}, {Self::SIZE}>(&mut self.data, #f_ident);
-                        }
-                    )*
-                }
+                    assert!((#size as usize) % 8 == 0, "fields' size should sum up to a multiple of 8.")
+                };
             }
         },
         _ => unimplemented!()

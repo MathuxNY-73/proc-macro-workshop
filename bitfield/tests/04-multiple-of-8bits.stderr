@@ -1,23 +1,7 @@
-error[E0277]: the trait bound `SevenMod8: TotalSizeIsMultipleOfEightBits` is not satisfied
+error[E0080]: evaluation of constant value failed
   --> tests/04-multiple-of-8bits.rs:53:1
    |
 53 | #[bitfield]
-   | ^^^^^^^^^^^ the trait `TotalSizeIsMultipleOfEightBits` is not implemented for `SevenMod8`
+   | ^^^^^^^^^^^ the evaluated program panicked at 'fields' size should sum up to a multiple of 8.', $DIR/tests/04-multiple-of-8bits.rs:53:1
    |
-   = help: the trait `TotalSizeIsMultipleOfEightBits` is implemented for `ZeroMod8`
-   = note: this error originates in the attribute macro `bitfield` (in Nightly builds, run with -Z macro-backtrace for more info)
-
-error[E0277]: the trait bound `SevenMod8: TotalSizeIsMultipleOfEightBits` is not satisfied in `NotQuiteFourBytes`
-  --> tests/04-multiple-of-8bits.rs:53:1
-   |
-53 | #[bitfield]
-   | ^^^^^^^^^^^ within `NotQuiteFourBytes`, the trait `TotalSizeIsMultipleOfEightBits` is not implemented for `SevenMod8`, which is required by `NotQuiteFourBytes: Sized`
-   |
-   = help: the trait `TotalSizeIsMultipleOfEightBits` is implemented for `ZeroMod8`
-note: required because it appears within the type `NotQuiteFourBytes`
-  --> tests/04-multiple-of-8bits.rs:54:12
-   |
-54 | pub struct NotQuiteFourBytes {
-   |            ^^^^^^^^^^^^^^^^^
-   = note: the return type of a function must have a statically known size
-   = note: this error originates in the attribute macro `bitfield` (in Nightly builds, run with -Z macro-backtrace for more info)
+   = note: this error originates in the macro `$crate::panic::panic_2021` which comes from the expansion of the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
