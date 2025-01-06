@@ -46,13 +46,17 @@ pub fn bitfield(_args: TokenStream, input: TokenStream) -> TokenStream {
                 #[repr(C)]
                 #vis struct #ident {
                     data: [u8; #size >> 3 + ((#size) % 8 != 0) as usize],
+                    _check: ::bitfield::checks::MultipleOfEight<[(); (#size as usize) % 8]>
                 }
 
                 impl #ident {
                     const SIZE: usize = #size >> 3 + ((#size) % 8 != 0) as usize;
 
                     #vis fn new() -> Self {
-                        Self { data: ::std::default::Default::default() }
+                        Self {
+                            data: ::std::default::Default::default(),
+                            _check: <::bitfield::checks::ZeroMod8 as ::bitfield::checks::TotalSizeIsMultipleOfEightBits>::Check::default(),
+                        }
                     }
 
                     #(

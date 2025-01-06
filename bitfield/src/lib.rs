@@ -10,6 +10,7 @@
 //
 // From the perspective of a user of this crate, they get all the necessary APIs
 // (macro, trait, struct) through the one bitfield crate.
+pub mod checks;
 pub use bitfield_impl::{bitfield, gen};
 
 use thiserror::Error;
