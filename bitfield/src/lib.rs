@@ -11,7 +11,7 @@
 // From the perspective of a user of this crate, they get all the necessary APIs
 // (macro, trait, struct) through the one bitfield crate.
 pub mod checks;
-pub use bitfield_impl::{bitfield, gen};
+pub use bitfield_impl::{bitfield, BitfieldSpecifier, gen};
 
 use thiserror::Error;
 use anyhow::{self, bail};
@@ -21,11 +21,26 @@ pub trait Specifier {
 
   type T: Sized;
 
-  fn set<const ACC: usize, const SIZE: usize>(arr: &mut [u8], num: <Self as Specifier>::T);
+  fn set<const ACC: usize, const SIZE: usize>(arr: &mut [u8], val: <Self as Specifier>::T);
   fn get<const ACC: usize, const SIZE: usize>(arr: &[u8]) -> <Self as Specifier>::T;
 }
 
 gen! {}
+
+impl Specifier for bool {
+  const BITS: usize = 1;
+
+  type T = bool;
+
+  fn set<const ACC: usize, const SIZE: usize>(arr: &mut [u8], val: <Self as Specifier>::T) {
+    BitsU8::<{Self::BITS}, ACC, SIZE>::SET(arr, if val { 1 } else {0} ).unwrap();
+  }
+
+  fn get<const ACC: usize, const SIZE: usize>(arr: &[u8]) -> <Self as Specifier>::T {
+    let res = BitsU8::<{Self::BITS}, ACC, SIZE>::GET(arr);
+    if res != 0 { true } else { false }
+  }
+}
 
 #[derive(Error, Debug)]
 #[error("Value {0} overflows the number of bits {BITS}")]

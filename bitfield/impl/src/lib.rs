@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 
 use quote::{ format_ident, quote };
-use syn::{parse_macro_input, Item};
+use syn::{parse_macro_input, spanned::Spanned, DeriveInput, Item};
 
 #[proc_macro_attribute]
 pub fn bitfield(_args: TokenStream, input: TokenStream) -> TokenStream {
@@ -81,6 +81,89 @@ pub fn bitfield(_args: TokenStream, input: TokenStream) -> TokenStream {
     tokens.into()
 }
 
+#[proc_macro_derive(BitfieldSpecifier, attributes(bits))]
+pub fn derive_bitfield_specifier(input: TokenStream) -> TokenStream {
+  let input = parse_macro_input!(input as DeriveInput);
+
+  let ident = &input.ident;
+  let syn::Data::Enum(e) = &input.data else {
+    return syn::Error::new(
+      input.ident.span(),
+      "Macro does not support any other item than enums."
+    ).into_compile_error().into()
+  };
+
+  let discriminants = (&e.variants).into_iter().map(|v| {
+    let Some((_, syn::Expr::Lit(syn::ExprLit {
+      lit: syn::Lit::Int(d),
+      ..
+    }))) = &v.discriminant else {
+      unreachable!()
+    };
+
+    d.base10_parse::<usize>().unwrap()
+  });
+
+  let attr_bits = input.attrs
+    .iter()
+    .filter_map(|attr| match &attr.meta {
+      mnv @ syn::Meta::NameValue(syn::MetaNameValue {
+        path,
+        value: syn::Expr::Lit(syn::ExprLit {
+          lit: syn::Lit::Int(val), ..}),
+        ..
+      }) if path.get_ident()
+                .map_or(false, |ident| ident == "bits") =>
+        Some((mnv.span(), val.base10_parse::<usize>())),
+      _ => None,
+    })
+  .collect::<Vec<_>>();
+
+  if attr_bits.len() > 1 {
+    return syn::Error::new(
+        attr_bits[1].0,
+        "Only one `#[bits = N]` attribute is allowed.")
+      .into_compile_error()
+      .into()
+  }
+
+  let number_bits = match attr_bits.into_iter().nth(0)
+    .map(|(_, val)| val) {
+      Some(Ok(val)) => val,
+      Some(Err(e)) => return e.into_compile_error().into(),
+      _ => {
+        discriminants.map(|mut val| {
+          let mut p = 0;
+          while val > 0 { p += 1; val >>= 1; }
+          p
+        }).max()
+        .expect("a max value must exists as we iterate over an enum discriminants.")
+      }
+    };
+
+  eprintln!("highest bits: {}", number_bits);
+
+  eprintln!("attrs: {:#?}", input.attrs);
+  eprintln!("enum: {:#?}", e);
+
+  let tokens = quote! {
+    impl Specifier for #ident {
+      const BITS: usize = #number_bits;
+
+      type T = #ident;
+
+      fn set<const ACC: usize, const SIZE: usize>(arr: &mut [u8], val: <Self as Specifier>::T) {
+        unimplemented!()
+      }
+
+      fn get<const ACC: usize, const SIZE: usize>(arr: &[u8]) -> <Self as Specifier>::T {
+        unimplemented!()
+      }
+    }
+  };
+  tokens.into()
+}
+
 #[proc_macro]
 pub fn gen(_: TokenStream) -> TokenStream {
     fn to_unsigned(bits: usize) -> (proc_macro2::Ident, proc_macro2::Ident) {
@@ -105,8 +188,8 @@ pub fn gen(_: TokenStream) -> TokenStream {
                 const BITS: usize = #range;
                 type T = ::core::primitive::#u_ident;
 
-                fn set<const ACC: usize, const SIZE: usize>(arr: &mut [u8], num: <Self as Specifier>::T) {
-                    #bits_u::<{Self::BITS}, ACC, SIZE>::SET(arr, num).unwrap()
+                fn set<const ACC: usize, const SIZE: usize>(arr: &mut [u8], val: <Self as Specifier>::T) {
+                    #bits_u::<{Self::BITS}, ACC, SIZE>::SET(arr, val).unwrap()
                 }
 
                 fn get<const ACC: usize, const SIZE: usize>(arr: &[u8]) -> <Self as Specifier>::T {
