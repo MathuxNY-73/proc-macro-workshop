@@ -94,15 +94,19 @@ pub fn derive_bitfield_specifier(input: TokenStream) -> TokenStream {
   };
 
   let discriminants = (&e.variants).into_iter().map(|v| {
-    let Some((_, syn::Expr::Lit(syn::ExprLit {
+    if let Some((_, syn::Expr::Lit(syn::ExprLit {
       lit: syn::Lit::Int(d),
       ..
-    }))) = &v.discriminant else {
-      unreachable!()
-    };
-
-    d.base10_parse::<usize>().unwrap()
+    }))) = &v.discriminant {
+      Some(d.base10_parse::<usize>().unwrap())
+    } else {
+      None
+    }
   });
+  let variants = (&e.variants).into_iter().map(|v| &v.ident);
+  let num_variants = variants.clone().count();
+
+  let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
   let attr_bits = input.attrs
     .iter()
@@ -132,53 +136,71 @@ pub fn derive_bitfield_specifier(input: TokenStream) -> TokenStream {
       Some(Ok(val)) => val,
       Some(Err(e)) => return e.into_compile_error().into(),
       _ => {
-        discriminants.map(|mut val| {
-          let mut p = 0;
-          while val > 0 { p += 1; val >>= 1; }
-          p
-        }).max()
+        discriminants
+          .map(|v| match v {
+            Some(v) => get_min_number_of_bits(v),
+            _ => 0,
+          })
+          .max()
         .expect("a max value must exists as we iterate over an enum discriminants.")
       }
     };
+  let number_bits = (get_min_number_of_bits(num_variants) - 1).max(number_bits);
 
-  eprintln!("highest bits: {}", number_bits);
-
-  eprintln!("attrs: {:#?}", input.attrs);
-  eprintln!("enum: {:#?}", e);
+  let bty = format_ident!("B{}", number_bits);
 
   let tokens = quote! {
-    impl Specifier for #ident {
-      const BITS: usize = #number_bits;
+    const _: () = {
+      impl #impl_generics ::bitfield::Specifier for #ident #ty_generics #where_clause {
+        const BITS: usize = <#bty as ::bitfield::Specifier>::BITS;
 
-      type T = #ident;
+        type T = #ident;
 
-      fn set<const ACC: usize, const SIZE: usize>(arr: &mut [u8], val: <Self as Specifier>::T) {
-        unimplemented!()
+        fn set<const ACC: usize, const SIZE: usize>(arr: &mut [u8], val: <Self as ::bitfield::Specifier>::T) {
+          <#bty as ::bitfield::Specifier>::set::<ACC, SIZE>(arr, val as <#bty as ::bitfield::Specifier>::T)
+        }
+
+        fn get<const ACC: usize, const SIZE: usize>(arr: &[u8]) -> <Self as ::bitfield::Specifier>::T {
+          fn __from_unsigned(num: <#bty as ::bitfield::Specifier>::T) -> #ident {
+            const VAR_MAP: [(<#bty as ::bitfield::Specifier>::T, #ident); #num_variants] = {
+              use #ident::*;
+              [#( (#variants as <#bty as ::bitfield::Specifier>::T, #variants) ),*]
+            };
+            VAR_MAP.into_iter().find_map(|(u, e)| if u == num { Some(e) } else { None }).unwrap()
+          }
+          __from_unsigned(<#bty as ::bitfield::Specifier>::get::<ACC, SIZE>(arr))
+        }
       }
-
-      fn get<const ACC: usize, const SIZE: usize>(arr: &[u8]) -> <Self as Specifier>::T {
-        unimplemented!()
-      }
-    }
+    };
   };
   tokens.into()
+}
+
+fn get_min_number_of_bits(mut val: usize) -> usize {
+  let mut p = 0;
+  while val > 0 { p += 1; val >>= 1; }
+  p
 }
 
 #[proc_macro]
 pub fn gen(_: TokenStream) -> TokenStream {
     fn to_unsigned(bits: usize) -> (proc_macro2::Ident, proc_macro2::Ident) {
-        let u = match bits {
-            65.. => unreachable!(),
-            33.. => 64u8,
-            17.. => 32,
-            9.. => 16,
-            _ => 8,
-        };
-        (format_ident!("u{}", u), format_ident!("BitsU{}", u))
+      let u = match bits {
+        65.. => unreachable!(),
+        33.. => 64u8,
+        17.. => 32,
+        9.. => 16,
+        _ => 8
+      };
+      (format_ident!("u{}", u), format_ident!("BitsU{}", u))
     }
     let range = 1..=64usize;
     let ident = range.clone().map(|n| format_ident!("B{}", n));
-    let (u_ident, bits_u): (Vec<_>, Vec<_>) = range.clone().map(to_unsigned).unzip();
+    let (u_ident, bits_u): (Vec<_>, Vec<_>) =
+      range
+        .clone()
+        .map(to_unsigned)
+        .unzip();
 
     let tokens = quote! {
         #(
