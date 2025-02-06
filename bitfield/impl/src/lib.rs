@@ -93,16 +93,6 @@ pub fn derive_bitfield_specifier(input: TokenStream) -> TokenStream {
     ).into_compile_error().into()
   };
 
-  let discriminants = (&e.variants).into_iter().map(|v| {
-    if let Some((_, syn::Expr::Lit(syn::ExprLit {
-      lit: syn::Lit::Int(d),
-      ..
-    }))) = &v.discriminant {
-      Some(d.base10_parse::<usize>().unwrap())
-    } else {
-      None
-    }
-  });
   let variants = (&e.variants).into_iter().map(|v| &v.ident);
   let num_variants = variants.clone().count();
 
@@ -131,21 +121,18 @@ pub fn derive_bitfield_specifier(input: TokenStream) -> TokenStream {
       .into()
   }
 
-  let number_bits = match attr_bits.into_iter().nth(0)
-    .map(|(_, val)| val) {
-      Some(Ok(val)) => val,
-      Some(Err(e)) => return e.into_compile_error().into(),
-      _ => {
-        discriminants
-          .map(|v| match v {
-            Some(v) => get_min_number_of_bits(v),
-            _ => 0,
-          })
-          .max()
-        .expect("a max value must exists as we iterate over an enum discriminants.")
+  let number_bits = match get_min_number_of_bits(num_variants as u32) {
+    Some(nb) => nb as usize,
+    _ => match attr_bits.into_iter().nth(0)
+      .map(|(_, val)| val) {
+        Some(Ok(val)) => val,
+        Some(Err(e)) => return e.into_compile_error().into(),
+        _ => return syn::Error::new(
+          proc_macro2::Span::call_site(),
+        "BitfieldSpecifier expected a number of variants which is a power of 2"
+        ).to_compile_error().into()
       }
-    };
-  let number_bits = (get_min_number_of_bits(num_variants) - 1).max(number_bits);
+  };
 
   let bty = format_ident!("B{}", number_bits);
 
@@ -176,10 +163,12 @@ pub fn derive_bitfield_specifier(input: TokenStream) -> TokenStream {
   tokens.into()
 }
 
-fn get_min_number_of_bits(mut val: usize) -> usize {
-  let mut p = 0;
-  while val > 0 { p += 1; val >>= 1; }
-  p
+fn get_min_number_of_bits(val: u32) -> Option<u32> {
+  if val.count_ones() == 1 {
+    Some(u32::BITS - val.leading_zeros() - 1)
+  } else {
+    None
+  }
 }
 
 #[proc_macro]
