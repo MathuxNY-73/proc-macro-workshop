@@ -45,3 +45,26 @@ impl ByteArray for [(); 7] {
 impl TotalSizeIsMultipleOfEightBits for ZeroMod8 {
   type Check = ();
 }
+
+// pub type IsDiscriminantInRange<T> = <<T as BoolArray>::Marker as DiscriminantInRange>;
+
+pub trait BoolArray {
+  type Marker;
+}
+
+pub trait DiscriminantInRange {
+  const CHECK: () = ();
+}
+
+pub struct False;
+pub struct True;
+
+impl BoolArray for [(); 0] {
+  type Marker = True;
+}
+
+impl BoolArray for [(); 1] {
+  type Marker = False;
+}
+
+impl DiscriminantInRange for True {}
