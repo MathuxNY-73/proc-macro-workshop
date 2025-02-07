@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 
-use quote::{ format_ident, quote };
+use quote::{ format_ident, quote, quote_spanned };
 use syn::{parse_macro_input, spanned::Spanned, DeriveInput, Item};
 
 #[proc_macro_attribute]
@@ -94,6 +94,7 @@ pub fn derive_bitfield_specifier(input: TokenStream) -> TokenStream {
   };
 
   let variants = (&e.variants).into_iter().map(|v| &v.ident);
+
   let num_variants = variants.clone().count();
 
   let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
@@ -135,9 +136,25 @@ pub fn derive_bitfield_specifier(input: TokenStream) -> TokenStream {
   };
 
   let bty = format_ident!("B{}", number_bits);
+  let variants2 = variants.clone();
+
+  let variant_checks = variants.clone().map(|v|
+    quote_spanned! {v.span()=>
+      const _: <#bty as ::bitfield::Specifier>::T =
+        (#num_variants as <#bty as ::bitfield::Specifier>::T) -
+          (#v as <#bty as ::bitfield::Specifier>::T) - 1;
+    }
+  );
 
   let tokens = quote! {
     const _: () = {
+      use #ident::*;
+
+      #( #variant_checks )*
+
+      const MAX_VAL: isize = 1 << <#bty as ::bitfield::Specifier>::BITS;
+      const CHECK: () = <<[(); (( #( (#variants2 as isize) >= MAX_VAL )||* ) as usize)] as ::bitfield::checks::BoolArray>::Marker as ::bitfield::checks::DiscriminantInRange>::CHECK;
+
       impl #impl_generics ::bitfield::Specifier for #ident #ty_generics #where_clause {
         const BITS: usize = <#bty as ::bitfield::Specifier>::BITS;
 
@@ -150,7 +167,6 @@ pub fn derive_bitfield_specifier(input: TokenStream) -> TokenStream {
         fn get<const ACC: usize, const SIZE: usize>(arr: &[u8]) -> <Self as ::bitfield::Specifier>::T {
           fn __from_unsigned(num: <#bty as ::bitfield::Specifier>::T) -> #ident {
             const VAR_MAP: [(<#bty as ::bitfield::Specifier>::T, #ident); #num_variants] = {
-              use #ident::*;
               [#( (#variants as <#bty as ::bitfield::Specifier>::T, #variants) ),*]
             };
             VAR_MAP.into_iter().find_map(|(u, e)| if u == num { Some(e) } else { None }).unwrap()
