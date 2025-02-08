@@ -23,6 +23,29 @@ pub fn bitfield(_args: TokenStream, input: TokenStream) -> TokenStream {
                 };
                 Some((ident, f))
             });
+            let checks = fields.clone().filter_map(|(_, f)| {
+                let ty = &f.ty;
+                f.attrs.iter()
+                    .filter(|attr| attr.path().is_ident("bits"))
+                    .map(|attr| match &attr.meta {
+                        syn::Meta::NameValue(syn::MetaNameValue {
+                            value: syn::Expr::Lit(syn::ExprLit {
+                                lit: lit @ syn::Lit::Int(val),
+                                ..
+                            }),
+                            ..
+                        }) => val.base10_parse::<usize>().map(|nb| (lit.span(), nb)),
+                        _ => Err(syn::Error::new(attr.span(),"Expected #[bits = N] attribute.")),
+                    })
+                    .next()
+                .map(|nb_bytes| match nb_bytes {
+                    Err(e) => e.into_compile_error(),
+                    Ok((span, nb_bytes)) => quote_spanned! { span=>
+                        const _: [(); #nb_bytes] = [(); <#ty as ::bitfield::Specifier>::BITS];
+                    },
+                })
+            });
+
             let num_fields = fields.clone().count();
             let f_ident = fields.clone().map(|(ident, _)| ident);
             let ty = fields.clone().map(|(_, f)| &f.ty);
@@ -73,6 +96,8 @@ pub fn bitfield(_args: TokenStream, input: TokenStream) -> TokenStream {
 
                     assert!((#size as usize) % 8 == 0, "fields' size should sum up to a multiple of 8.")
                 };
+
+                #( #checks )*
             }
         },
         _ => unimplemented!()
